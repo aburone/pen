@@ -1,6 +1,5 @@
 /*! Licensed under MIT, https://github.com/sofish/pen */
 (function(root, doc) {
-
   var Pen, debugMode, selection, utils = {};
   var toString = Object.prototype.toString;
   var slice = Array.prototype.slice;
@@ -47,6 +46,155 @@
       }
     }
   };
+
+  function addListener(ctx, target, type, listener) {
+    if (ctx._events.hasOwnProperty(type)) {
+      ctx._events[type].push(listener);
+    } else {
+      ctx._eventTargets = ctx._eventTargets || [];
+      ctx._eventsCache = ctx._eventsCache || [];
+      var index = ctx._eventTargets.indexOf(target);
+      if (index < 0) index = ctx._eventTargets.push(target) - 1;
+      ctx._eventsCache[index] = ctx._eventsCache[index] || {};
+      ctx._eventsCache[index][type] = ctx._eventsCache[index][type] || [];
+      ctx._eventsCache[index][type].push(listener);
+
+      target.addEventListener(type, listener, false);
+    }
+    return ctx;
+  }
+
+  // trigger local events
+  function triggerListener(ctx, type) {
+    if (!ctx._events.hasOwnProperty(type)) return;
+    var args = slice.call(arguments, 2);
+    utils.forEach(ctx._events[type], function (listener) {
+      listener.apply(ctx, args);
+    });
+  }
+
+  function removeListener(ctx, target, type, listener) {
+    var events = ctx._events[type];
+    if (!events) {
+      var _index = ctx._eventTargets.indexOf(target);
+      if (_index >= 0) events = ctx._eventsCache[_index][type];
+    }
+    if (!events) return ctx;
+    var index = events.indexOf(listener);
+    if (index >= 0) events.splice(index, 1);
+    target.removeEventListener(type, listener, false);
+    return ctx;
+  }
+
+  function removeAllListeners(ctx) {
+    utils.forEach(this._events, function (events) {
+      events.length = 0;
+    }, false);
+    if (!ctx._eventsCache) return ctx;
+    utils.forEach(ctx._eventsCache, function (events, index) {
+      var target = ctx._eventTargets[index];
+      utils.forEach(events, function (listeners, type) {
+        utils.forEach(listeners, function (listener) {
+          target.removeEventListener(type, listener, false);
+        }, true);
+      }, false);
+    }, true);
+    ctx._eventTargets = [];
+    ctx._eventsCache = [];
+    return ctx;
+  }
+
+  function checkPlaceholder(ctx) {
+    ctx.config.editor.classList[ctx.isEmpty() ? 'add' : 'remove']('pen-placeholder');
+  }
+
+  function trim(str) {
+    return (str || '').replace(/^\s+|\s+$/g, '');
+  }
+
+  // node.contains is not implemented in IE10/IE11
+  function containsNode(parent, child) {
+    if (parent === child) return true;
+    child = child.parentNode;
+    while (child) {
+      if (child === parent) return true;
+      child = child.parentNode;
+    }
+    return false;
+  }
+
+  function getNode(ctx, byRoot) {
+    var node, root = ctx.config.editor;
+    ctx._range = ctx._range || ctx.getRange();
+    node = ctx._range.commonAncestorContainer;
+    if (!node || node === root) return null;
+    while (node && (node.nodeType !== 1) && (node.parentNode !== root)) node = node.parentNode;
+    while (node && byRoot && (node.parentNode !== root)) node = node.parentNode;
+    return containsNode(root, node) ? node : null;
+  }
+
+  // node effects
+  function effectNode(ctx, el, returnAsNodeName) {
+    var nodes = [];
+    el = el || ctx.config.editor;
+    while (el && el !== ctx.config.editor) {
+      if (el.nodeName.match(effectNodeReg)) {
+        nodes.push(returnAsNodeName ? el.nodeName.toLowerCase() : el);
+      }
+      el = el.parentNode;
+    }
+    return nodes;
+  }
+
+  function focusNode(ctx, node, range) {
+    range.setStartAfter(node);
+    range.setEndBefore(node);
+    range.collapse(false);
+    ctx.setRange(range);
+  }
+
+  // breakout from node
+  function lineBreak(ctx, empty) {
+    var range = ctx._range = ctx.getRange(), node = doc.createElement('p');
+    if (empty) ctx.config.editor.innerHTML = '';
+    node.innerHTML = '<br>';
+    range.insertNode(node);
+    focusNode(ctx, node.childNodes[0], range);
+  }
+
+  function urlToLink(str) {
+    var count = 0;
+    str = str.replace(autoLinkReg.url, function(url) {
+      var realUrl = url, displayUrl = url;
+      count++;
+      if (url.length > autoLinkReg.maxLength) displayUrl = url.slice(0, autoLinkReg.maxLength) + '...';
+      // Add http prefix if necessary
+      if (!autoLinkReg.prefix.test(realUrl)) realUrl = 'http://' + realUrl;
+      return '<a href="' + realUrl + '">' + displayUrl + '</a>';
+    });
+    return {links: count, text: str};
+  }
+
+  function autoLink(node) {
+    if (node.nodeType === 1) {
+      if (autoLinkReg.notLink.test(node.tagName)) return;
+      utils.forEach(node.childNodes, function (child) {
+        autoLink(child);
+      }, true);
+    } else if (node.nodeType === 3) {
+      var result = urlToLink(node.nodeValue || '');
+      if (!result.links) return;
+      var frag = doc.createDocumentFragment(),
+          div = doc.createElement('div');
+      div.innerHTML = result.text;
+      while (div.childNodes.length) frag.appendChild(div.childNodes[0]);
+      node.parentNode.replaceChild(frag, node);
+    }
+  }
+
+  function toggleNode(node, hide) {
+    node.style.display = hide ? 'none' : 'block';
+  }
 
   // copy props from a obj
   utils.copy = function(defaults, source) {
@@ -329,155 +477,6 @@
         ctx.cleanContent();
       });
     });
-  }
-
-  function addListener(ctx, target, type, listener) {
-    if (ctx._events.hasOwnProperty(type)) {
-      ctx._events[type].push(listener);
-    } else {
-      ctx._eventTargets = ctx._eventTargets || [];
-      ctx._eventsCache = ctx._eventsCache || [];
-      var index = ctx._eventTargets.indexOf(target);
-      if (index < 0) index = ctx._eventTargets.push(target) - 1;
-      ctx._eventsCache[index] = ctx._eventsCache[index] || {};
-      ctx._eventsCache[index][type] = ctx._eventsCache[index][type] || [];
-      ctx._eventsCache[index][type].push(listener);
-
-      target.addEventListener(type, listener, false);
-    }
-    return ctx;
-  }
-
-  // trigger local events
-  function triggerListener(ctx, type) {
-    if (!ctx._events.hasOwnProperty(type)) return;
-    var args = slice.call(arguments, 2);
-    utils.forEach(ctx._events[type], function (listener) {
-      listener.apply(ctx, args);
-    });
-  }
-
-  function removeListener(ctx, target, type, listener) {
-    var events = ctx._events[type];
-    if (!events) {
-      var _index = ctx._eventTargets.indexOf(target);
-      if (_index >= 0) events = ctx._eventsCache[_index][type];
-    }
-    if (!events) return ctx;
-    var index = events.indexOf(listener);
-    if (index >= 0) events.splice(index, 1);
-    target.removeEventListener(type, listener, false);
-    return ctx;
-  }
-
-  function removeAllListeners(ctx) {
-    utils.forEach(this._events, function (events) {
-      events.length = 0;
-    }, false);
-    if (!ctx._eventsCache) return ctx;
-    utils.forEach(ctx._eventsCache, function (events, index) {
-      var target = ctx._eventTargets[index];
-      utils.forEach(events, function (listeners, type) {
-        utils.forEach(listeners, function (listener) {
-          target.removeEventListener(type, listener, false);
-        }, true);
-      }, false);
-    }, true);
-    ctx._eventTargets = [];
-    ctx._eventsCache = [];
-    return ctx;
-  }
-
-  function checkPlaceholder(ctx) {
-    ctx.config.editor.classList[ctx.isEmpty() ? 'add' : 'remove']('pen-placeholder');
-  }
-
-  function trim(str) {
-    return (str || '').replace(/^\s+|\s+$/g, '');
-  }
-
-  // node.contains is not implemented in IE10/IE11
-  function containsNode(parent, child) {
-    if (parent === child) return true;
-    child = child.parentNode;
-    while (child) {
-      if (child === parent) return true;
-      child = child.parentNode;
-    }
-    return false;
-  }
-
-  function getNode(ctx, byRoot) {
-    var node, root = ctx.config.editor;
-    ctx._range = ctx._range || ctx.getRange();
-    node = ctx._range.commonAncestorContainer;
-    if (!node || node === root) return null;
-    while (node && (node.nodeType !== 1) && (node.parentNode !== root)) node = node.parentNode;
-    while (node && byRoot && (node.parentNode !== root)) node = node.parentNode;
-    return containsNode(root, node) ? node : null;
-  }
-
-  // node effects
-  function effectNode(ctx, el, returnAsNodeName) {
-    var nodes = [];
-    el = el || ctx.config.editor;
-    while (el && el !== ctx.config.editor) {
-      if (el.nodeName.match(effectNodeReg)) {
-        nodes.push(returnAsNodeName ? el.nodeName.toLowerCase() : el);
-      }
-      el = el.parentNode;
-    }
-    return nodes;
-  }
-
-  // breakout from node
-  function lineBreak(ctx, empty) {
-    var range = ctx._range = ctx.getRange(), node = doc.createElement('p');
-    if (empty) ctx.config.editor.innerHTML = '';
-    node.innerHTML = '<br>';
-    range.insertNode(node);
-    focusNode(ctx, node.childNodes[0], range);
-  }
-
-  function focusNode(ctx, node, range) {
-    range.setStartAfter(node);
-    range.setEndBefore(node);
-    range.collapse(false);
-    ctx.setRange(range);
-  }
-
-  function autoLink(node) {
-    if (node.nodeType === 1) {
-      if (autoLinkReg.notLink.test(node.tagName)) return;
-      utils.forEach(node.childNodes, function (child) {
-        autoLink(child);
-      }, true);
-    } else if (node.nodeType === 3) {
-      var result = urlToLink(node.nodeValue || '');
-      if (!result.links) return;
-      var frag = doc.createDocumentFragment(),
-        div = doc.createElement('div');
-      div.innerHTML = result.text;
-      while (div.childNodes.length) frag.appendChild(div.childNodes[0]);
-      node.parentNode.replaceChild(frag, node);
-    }
-  }
-
-  function urlToLink(str) {
-    var count = 0;
-    str = str.replace(autoLinkReg.url, function(url) {
-      var realUrl = url, displayUrl = url;
-      count++;
-      if (url.length > autoLinkReg.maxLength) displayUrl = url.slice(0, autoLinkReg.maxLength) + '...';
-      // Add http prefix if necessary
-      if (!autoLinkReg.prefix.test(realUrl)) realUrl = 'http://' + realUrl;
-      return '<a href="' + realUrl + '">' + displayUrl + '</a>';
-    });
-    return {links: count, text: str};
-  }
-
-  function toggleNode(node, hide) {
-    node.style.display = hide ? 'none' : 'block';
   }
 
   Pen = function(config) {
